@@ -122,7 +122,7 @@
         .ticker-bar {
             background: linear-gradient(90deg, #0A4D8C 0%, #0066FF 100%);
             color: white; overflow: hidden; white-space: nowrap;
-            padding: 6px 0; font-size: 13px; position: relative;
+            padding: 6px 0; font-size: 13px; position: sticky; top: 56px; z-index: 100;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
         }
         .ticker-bar .ticker-label {
@@ -1599,6 +1599,22 @@
         const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
             auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
         });
+        
+        // 页面加载时测试 Supabase 连接
+        async function testSupabaseConnection() {
+            try {
+                console.log('[测试] 开始测试 Supabase 连接...');
+                const { data, error } = await supabaseClient.from('profiles').select('id').limit(1);
+                if (error) {
+                    console.error('[测试] Supabase 查询失败:', error);
+                } else {
+                    console.log('[测试] Supabase 连接成功:', data);
+                }
+            } catch (e) {
+                console.error('[测试] Supabase 连接异常:', e);
+            }
+        }
+        testSupabaseConnection();
 
         // 初始化 EmailJS
         emailjs.init('DO-rY5_HM3hSl5u6V');
@@ -1768,6 +1784,7 @@
             showPage('page-search');
             document.getElementById('search-page-input').value = '';
             document.getElementById('search-page-input').focus();
+            loadUserCount(); // 更新用户总数
             loadSearchHotPreview();
         }
 
@@ -2144,16 +2161,16 @@
         }
 
         function generateEmailCode() {
-            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+            // 生成4位数字验证码
             let code = '';
-            for (let i = 0; i < 6; i++) {
-                code += chars.charAt(Math.floor(Math.random() * chars.length));
+            for (let i = 0; i < 4; i++) {
+                code += Math.floor(Math.random() * 10);
             }
             return code;
         }
 
         async function sendVerificationCode() {
-            const email = document.getElementById('register-email').value.trim();
+            const email = document.getElementById('register-email').value.trim().toLowerCase();
             const nickname = document.getElementById('register-nickname').value.trim();
             if (!email || !nickname) { showMessage('请先填写邮箱和昵称', 'error'); return; }
             const btn = document.getElementById('send-code-btn');
@@ -2161,13 +2178,23 @@
             btn.textContent = '发送中...';
             try {
                 const code = generateEmailCode();
-                await emailjs.send('service_kay64vg', 'template_i44avg5', {
-                    code: code,
-                    to_email: email,
-                    nickname: nickname
-                });
-                sessionStorage.setItem('email_code_' + email, code);
-                showMessage('验证码已发送到邮箱', 'success');
+                
+                // 发送验证码邮件
+                try {
+                    await emailjs.send('service_kay64vg', 'template_i44avg5', {
+                        code: code,
+                        to_email: email,
+                        nickname: nickname
+                    });
+                    sessionStorage.setItem('email_code_' + email, code);
+                    showMessage('验证码已发送到邮箱', 'success');
+                } catch (emailError) {
+                    // 邮件发送失败（额度用完或其他错误），直接显示验证码
+                    console.warn('邮件发送失败:', emailError);
+                    sessionStorage.setItem('email_code_' + email, code);
+                    showMessage('验证码：' + code, 'success');
+                }
+                
                 let countdown = 60;
                 btn.textContent = `${countdown}秒后重发`;
                 const timer = setInterval(() => {
@@ -2189,58 +2216,122 @@
         }
 
         async function handleRegister() {
-            const email = document.getElementById('register-email').value.trim();
+            const email = document.getElementById('register-email').value.trim().toLowerCase();
             const password = document.getElementById('register-password').value.trim();
             const nickname = document.getElementById('register-nickname').value.trim();
-            const code = document.getElementById('register-code').value.trim();
+            const code = document.getElementById('register-code').value.trim().toUpperCase();
             console.log('[注册] 输入:', { email, nickname, codeLength: code.length, passwordLength: password.length });
             if (!email || !password || !nickname || !code) { showMessage('请填写完整信息', 'error'); return; }
             if (password.length < 6) { showMessage('密码至少需要6位', 'error'); return; }
+            
+            // 验证 EmailJS 发送的验证码（不区分大小写）
+            const storedCode = sessionStorage.getItem('email_code_' + email);
+            console.log('[注册] 验证码比对:', { stored: storedCode, input: code });
+            if (!storedCode) {
+                showMessage('验证码已过期，请重新发送', 'error');
+                return;
+            }
+            if (storedCode.toUpperCase() !== code) {
+                showMessage('验证码错误', 'error');
+                return;
+            }
+            sessionStorage.removeItem('email_code_' + email);
+            
+            // 检查昵称是否重复
+            let existingUser, checkError;
             try {
-                // 验证 EmailJS 发送的验证码
-                const storedCode = sessionStorage.getItem('email_code_' + email);
-                if (!storedCode || storedCode !== code) {
-                    showMessage('验证码错误或已过期', 'error');
-                    return;
-                }
-                sessionStorage.removeItem('email_code_' + email);
-                // 检查昵称是否重复
-                const { data: existingUser, error: checkError } = await supabaseClient
+                const result = await supabaseClient
                     .from('profiles')
                     .select('id')
                     .eq('username', nickname)
                     .maybeSingle();
-                if (existingUser) {
-                    showMessage('该昵称已被使用，请换一个', 'error');
-                    return;
-                }
-                // 注册账号
-                console.log('[注册] 开始 Supabase signUp');
-                const { data, error } = await supabaseClient.auth.signUp({
-                    email,
-                    password,
-                    options: { data: { nickname } }
-                });
-                console.log('[注册] signUp 结果:', { data, error });
-                if (error) {
-                    showMessage('注册失败：' + error.message, 'error');
-                    return;
-                }
-                currentUser = data.user;
-                console.log('[注册] 创建 profile');
-                await createProfile(nickname, email);
-                console.log('[注册] profile 完成');
-                await trackUserIp();
-                showMessage('注册成功！', 'success');
-                loadUserCount();
-                startMessagePolling();
-                navigateHome();
-                updateNav();
+                existingUser = result.data;
+                checkError = result.error;
             } catch (e) {
-                console.error('[注册] 异常对象:', e);
-                const msg = e && e.message ? e.message : (typeof e === 'object' ? JSON.stringify(e) : String(e));
-                showMessage('注册失败：' + msg, 'error');
+                console.error('[注册] 检查昵称异常:', e);
+                showMessage('网络错误，请稍后重试', 'error');
+                return;
             }
+            if (checkError) {
+                console.error('[注册] 检查昵称失败:', checkError);
+                showMessage('检查昵称失败，请稍后重试', 'error');
+                return;
+            }
+            if (existingUser) {
+                showMessage('该昵称已被使用，请换一个', 'error');
+                return;
+            }
+            
+            // 注册账号（使用原生 fetch 绕过 SDK）
+            console.log('[注册] 开始注册');
+            
+            try {
+                const response = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'apikey': SUPABASE_ANON_KEY
+                    },
+                    body: JSON.stringify({
+                        email: email,
+                        password: password,
+                        data: { nickname: nickname }
+                    })
+                });
+                
+                const result = await response.json();
+                console.log('[注册] fetch 结果:', result, 'status:', response.status);
+                
+                if (!response.ok) {
+                    let errMsg = '注册失败';
+                    if (result.message?.includes('already registered') || result.message?.includes('already exists')) {
+                        errMsg = '该邮箱已被注册，请直接登录';
+                    } else if (result.message) {
+                        errMsg = result.message;
+                    } else if (result.error_description) {
+                        errMsg = result.error_description;
+                    }
+                    showMessage(errMsg, 'error');
+                    return;
+                }
+                
+                if (!result.user) {
+                    showMessage('注册成功，请检查邮箱确认', 'success');
+                    return;
+                }
+                
+                currentUser = result.user;
+                console.log('[注册] 用户创建成功, userId:', currentUser.id);
+                
+            } catch (e) {
+                console.error('[注册] fetch 异常:', e);
+                showMessage('网络连接失败，请检查网络后重试', 'error');
+                return;
+            }
+            
+            // 创建 profile
+            console.log('[注册] 开始创建 profile');
+            try {
+                await createProfile(nickname, email);
+                console.log('[注册] profile 创建完成');
+            } catch (e) {
+                console.error('[注册] createProfile 异常:', e);
+                showMessage('账号已创建，但资料设置失败，请重新登录', 'error');
+                return;
+            }
+            
+            // 记录 IP
+            try {
+                await trackUserIp();
+            } catch (e) {
+                console.error('[注册] trackUserIp 失败:', e);
+            }
+            
+            showMessage('注册成功！', 'success');
+            loadUserCount();
+            startMessagePolling();
+            navigateHome();
+            updateNav();
         }
 
         async function createProfile(nickname, email) {
@@ -2257,28 +2348,25 @@
                 }
             }
 
-            // 首先检查 profile 是否已存在（可能由触发器创建）
-            const { data: existingProfile } = await supabaseClient.from('profiles')
-                .select('id')
-                .eq('id', currentUser.id)
-                .maybeSingle();
-
-            if (existingProfile) {
-                // profile 已存在，尝试更新用户名和邮箱（如果需要）
-                await supabaseClient.from('profiles')
-                    .update({ username: nickname, email: email })
-                    .eq('id', currentUser.id);
-            } else {
-                // profile 不存在，尝试创建
-                const { error } = await supabaseClient.from('profiles').insert([
-                    { id: currentUser.id, username: nickname, email, bio: '', avatar_url: null }
-                ]);
-                if (error) {
-                    console.error('创建资料失败:', error);
-                    // 如果创建失败，提示用户重新登录
-                    showMessage('账号已创建，请重新登录以完成设置', 'error');
-                }
+            if (!currentUser) {
+                console.error('无法获取用户会话');
+                throw new Error('无法获取用户会话');
             }
+
+            // 使用 RPC 函数创建 profile（绕过 RLS）
+            console.log('[createProfile] 使用 RPC 创建 profile, userId:', currentUser.id, 'nickname:', nickname);
+            const { error: rpcError } = await supabaseClient.rpc('create_user_profile', {
+                p_user_id: currentUser.id,
+                p_username: nickname,
+                p_email: email
+            });
+
+            if (rpcError) {
+                console.error('[createProfile] RPC 失败:', rpcError);
+                throw rpcError;
+            }
+
+            console.log('[createProfile] RPC 成功');
             await loadUserProfile();
         }
 
@@ -2298,7 +2386,7 @@
         function isCurrentUserSuperAdmin() {
             if (!currentUser) return false;
             const email = currentUser.email || currentUser.user_metadata?.email || currentUser.profile_email || '';
-            return email === '2211354141@qq.com';
+            return email === '2211354141@qq.com' || email === '19256680343@bigblue.com' || email === '13590179040@bigblue.com';
         }
 
         async function getUserIp() {
@@ -3172,9 +3260,9 @@
                 ? `<div class="lazy-img-placeholder" style="background:${getRandomCoverColor()}" data-placeholder><span>${placeholderText}</span></div>`
                 : `<div class="lazy-img-spinner"></div>`;
             return `
-                <div class="lazy-img-wrap" ${heightStyle}>
+                <div class="lazy-img-wrap" ${heightStyle} ${onclick}>
                     ${placeholderHtml}
-                    <img src="${src}" alt="${alt || ''}" ${onclick} loading="lazy" decoding="async" onload="this.classList.add('loaded'); this.closest('.lazy-img-wrap').classList.add('loaded');" onerror="this.closest('.lazy-img-wrap').classList.add('loaded'); this.style.opacity='0.2';">
+                    <img src="${src}" alt="${alt || ''}" loading="lazy" decoding="async" onload="this.classList.add('loaded'); this.closest('.lazy-img-wrap').classList.add('loaded');" onerror="this.closest('.lazy-img-wrap').classList.add('loaded'); this.style.opacity='0.2';">
                 </div>
             `;
         }
@@ -3441,7 +3529,10 @@
             const authorName = post.profiles?.username || '匿名';
             const authorAvatar = post.profiles?.avatar_url;
             const firstChar = authorName.charAt(0);
-            const images = post.image_urls || [];
+            const thumbnails = post.thumbnail_urls || [];
+            const fullImages = post.image_urls || [];
+            // 显示缩略图，点击查看原图
+            const displayImages = thumbnails.length > 0 ? thumbnails : fullImages;
             currentDetailPostObj = post;
             const hasPoll = post.poll_options && post.poll_options.length > 0;
 
@@ -3478,9 +3569,9 @@
                     <div class="post-title-text">${post.title}${getContentTypeBadge(post)}</div>
                     ${renderPostContent(post)}
                     ${hasPoll ? '<div id="poll-container"><div class="poll-loading">加载投票中...</div></div>' : ''}
-                    ${images.length > 0 ? `
+                    ${displayImages.length > 0 ? `
                         <div class="post-images">
-                            ${images.map(url => renderLazyImg(getResizedImageUrl(url, 1200), '图片', url, 250)).join('')}
+                            ${displayImages.map((thumb, i) => renderLazyImg(thumb, '图片', fullImages[i] || thumb, 250)).join('')}
                         </div>
                     ` : ''}
                     <div class="post-footer">
@@ -3501,7 +3592,6 @@
                 </div>
                 <div class="comments-section">
                     <div class="comments-title">💬 评论</div>
-                    <div id="comments-list">${commentsHTML}</div>
                     ${currentUser ? `
                         <div class="comment-input-area">
                             <input type="text" id="comment-input" placeholder="写下你的评论..." onkeypress="if(event.key==='Enter') submitComment()">
@@ -3511,6 +3601,7 @@
                         <input type="file" id="comment-image-input" accept="image/*" multiple style="display:none" onchange="handleCommentImageSelect(event)">
                         <div id="comment-img-preview" class="comment-img-preview"></div>
                     ` : '<div style="text-align:center;padding:15px;color:#888;font-size:14px;">登录后可发表评论</div>'}
+                    <div id="comments-list">${commentsHTML}</div>
                 </div>
             `;
 
@@ -5060,12 +5151,26 @@
                     return;
                 }
 
+<<<<<<< HEAD
+                const { data: resolveData, error: resolveError } = await supabaseClient.rpc('resolve_user_trial', {
+                    p_trial_id: trialId,
+                    p_admin_user_id: currentUser.id,
+                    p_status: 'banned',
+                    p_reason: reason.trim()
+                });
+                if (resolveError) throw resolveError;
+                if (!resolveData?.success) {
+                    showMessage(resolveData?.error || '结案失败', 'error');
+                    return;
+                }
+=======
                 await supabaseClient.rpc('resolve_user_trial', {
                     p_trial_id: trialId,
                     admin_user_id: currentUser.id,
                     p_status: 'banned',
                     p_reason: reason.trim()
                 });
+>>>>>>> 22965584e6db9eec1041a3b1eab728f72635520f
 
                 showMessage('已封禁该用户并结案', 'success');
                 loadTrialList();
@@ -5082,7 +5187,11 @@
             try {
                 const { data, error } = await supabaseClient.rpc('resolve_user_trial', {
                     p_trial_id: trialId,
+<<<<<<< HEAD
+                    p_admin_user_id: currentUser.id,
+=======
                     admin_user_id: currentUser.id,
+>>>>>>> 22965584e6db9eec1041a3b1eab728f72635520f
                     p_status: 'innocent'
                 });
                 if (error) throw error;

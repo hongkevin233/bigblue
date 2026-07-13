@@ -10,15 +10,6 @@ const SMTP_USER = process.env.SMTP_USER || '18520893735@163.com';
 const SMTP_PASS = process.env.SMTP_PASS || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || SMTP_USER;
 
-function generateCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
-}
-
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
@@ -45,24 +36,13 @@ exports.main = async (event) => {
 
   const email = body && body.email ? body.email.trim() : '';
   const nickname = body && body.nickname ? body.nickname.trim() : '';
+  const code = body && body.code ? body.code.trim() : ''; // 前端传来的验证码
 
   if (!email) return response(400, { error: '邮箱不能为空' });
+  if (!code) return response(400, { error: '验证码不能为空' });
   if (!SMTP_PASS) return response(500, { error: 'SMTP 授权码未配置' });
 
-  const code = generateCode();
-  const expiresAt = Date.now() + 5 * 60 * 1000;
-
   try {
-    // 存入云开发数据库
-    await db.collection('email_codes').add({
-      email,
-      code,
-      nickname,
-      expiresAt,
-      used: false,
-      createTime: new Date()
-    });
-
     const transporter = nodemailer.createTransport({
       host: SMTP_HOST,
       port: SMTP_PORT,
